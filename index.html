@@ -269,19 +269,69 @@ function renderSummary(period){
 
 /* ---------- session ---------- */
 var activeIdx = null, sessInterval = null, sessSeconds = 0, limitFired = false;
+var REAL_URLS = {
+  Instagram: "https://www.instagram.com",
+  WhatsApp: "whatsapp://",
+  Facebook: "https://m.facebook.com",
+  TikTok: "https://www.tiktok.com",
+  YouTube: "https://m.youtube.com",
+  X: "https://mobile.twitter.com",
+  Reddit: "https://www.reddit.com",
+  Snapchat: "https://web.snapchat.com"
+};
+var browserListenerAttached = false;
+var whatsappSessionActive = false;
+var whatsappVisibilityAttached = false;
+
 function enterSession(i){
   activeIdx = i;
   sessSeconds = 0; limitFired = false;
-  document.getElementById("sess-app-name").textContent = state.apps[i].name;
-  document.getElementById("sess-content").innerHTML =
-    '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Contact 1</div><div style="font-size:12px; color:var(--text-secondary);">Hey, are we still on for later?</div></div></div>'+
-    '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Contact 2</div><div style="font-size:12px; color:var(--text-secondary);">Sent the photos over</div></div></div>'+
-    '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Group chat</div><div style="font-size:12px; color:var(--text-secondary);">3 new messages</div></div></div>';
+  var appName = state.apps[i].name;
+  document.getElementById("sess-app-name").textContent = appName;
   document.getElementById("session-screen").style.display = "block";
   document.getElementById("timer").textContent = "0:00";
   document.getElementById("mouth-mini").setAttribute("d", moods[0].mouth);
+
+  var Browser = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+  var url = REAL_URLS[appName];
+  var isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+
+  if(isNative && appName === "WhatsApp"){
+    // WhatsApp has no real mobile-web client (web.whatsapp.com just asks to pair via QR).
+    // Deep-link straight into the installed WhatsApp app instead.
+    document.getElementById("sess-content").innerHTML =
+      '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening the WhatsApp app…</p>';
+    whatsappSessionActive = true;
+    if(!whatsappVisibilityAttached){
+      whatsappVisibilityAttached = true;
+      document.addEventListener("visibilitychange", function(){
+        if(document.visibilityState === "visible" && whatsappSessionActive){
+          whatsappSessionActive = false;
+          exitSession();
+        }
+      });
+    }
+    window.location.href = "whatsapp://";
+  } else if(Browser && url){
+    // Real device: launch the actual site in an in-app browser tab
+    document.getElementById("sess-content").innerHTML =
+      '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening ' + appName + '… this tab is tracking your time. Close it to return here.</p>';
+    if(!browserListenerAttached){
+      browserListenerAttached = true;
+      Browser.addListener("browserFinished", function(){ exitSession(); });
+    }
+    Browser.open({ url: url });
+  } else {
+    // Not running natively (e.g. viewing in a normal web browser): show mock content instead
+    document.getElementById("sess-content").innerHTML =
+      '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Contact 1</div><div style="font-size:12px; color:var(--text-secondary);">Hey, are we still on for later?</div></div></div>'+
+      '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Contact 2</div><div style="font-size:12px; color:var(--text-secondary);">Sent the photos over</div></div></div>'+
+      '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Group chat</div><div style="font-size:12px; color:var(--text-secondary);">3 new messages</div></div></div>'+
+      '<p style="text-align:center; font-size:11px; color:var(--text-muted); padding:14px;">(Demo content — install as a native app to open the real site)</p>';
+  }
+
   sessInterval = setInterval(function(){
-    sessSeconds += 3; // sped up for demo
+    sessSeconds += 3; // sped up for demo/web mode; real native sessions could switch this to +1 for true real-time tracking
     var mn = Math.floor(sessSeconds/60), sc = sessSeconds%60;
     document.getElementById("timer").textContent = mn + ":" + String(sc).padStart(2,"0");
     var elapsedMin = sessSeconds/60;
