@@ -297,8 +297,9 @@ function enterSession(i){
   var isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
 
   if(isNative && appName === "WhatsApp"){
-    // WhatsApp has no real mobile-web client (web.whatsapp.com just asks to pair via QR).
-    // Deep-link straight into the installed WhatsApp app instead.
+    // WhatsApp has no real mobile-web client, and URI-scheme deep links proved unreliable
+    // across devices. Ask Android directly for WhatsApp's own launch intent instead —
+    // the same mechanism used when tapping its icon on the home screen.
     document.getElementById("sess-content").innerHTML =
       '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening the WhatsApp app…</p>'+
       '<p style="text-align:center;"><a id="wa-manual-link" href="whatsapp://" style="font-size:13px; color:var(--accent); text-decoration:underline; display:none;">Tap here if it didn\'t open automatically</a></p>';
@@ -312,22 +313,21 @@ function enterSession(i){
         }
       });
     }
-    // A real (invisible) anchor click is honored more reliably by Android's WebView
-    // for launching external apps than setting window.location.href directly.
-    var waLink = document.createElement("a");
-    waLink.href = "whatsapp://";
-    waLink.style.display = "none";
-    document.body.appendChild(waLink);
-    waLink.click();
-    setTimeout(function(){ if(waLink.parentNode) waLink.parentNode.removeChild(waLink); }, 500);
-    // If nothing happened (app didn't launch, tab is still visible) after a couple seconds,
-    // reveal a manual fallback link so the person isn't stuck on a silent screen.
-    setTimeout(function(){
-      if(whatsappSessionActive && document.visibilityState === "visible"){
-        var manualLink = document.getElementById("wa-manual-link");
-        if(manualLink) manualLink.style.display = "inline";
-      }
-    }, 2000);
+    var AppLauncher = window.Capacitor.Plugins && window.Capacitor.Plugins.AppLauncher;
+    function showManualFallback(){
+      var manualLink = document.getElementById("wa-manual-link");
+      if(manualLink) manualLink.style.display = "inline";
+    }
+    if(AppLauncher){
+      AppLauncher.openPackage({ packageName: "com.whatsapp" }).catch(function(){
+        // regular WhatsApp not found — try WhatsApp Business before giving up
+        return AppLauncher.openPackage({ packageName: "com.whatsapp.w4b" });
+      }).catch(function(){
+        showManualFallback();
+      });
+    } else {
+      showManualFallback();
+    }
   } else if(Browser && url){
     // Real device: launch the actual site in an in-app browser tab
     document.getElementById("sess-content").innerHTML =
