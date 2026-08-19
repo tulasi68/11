@@ -271,7 +271,7 @@ function renderSummary(period){
 var activeIdx = null, sessInterval = null, sessSeconds = 0, limitFired = false;
 var REAL_URLS = {
   Instagram: "https://www.instagram.com",
-  WhatsApp: "https://web.whatsapp.com",
+  WhatsApp: "whatsapp://",
   Facebook: "https://m.facebook.com",
   TikTok: "https://www.tiktok.com",
   YouTube: "https://m.youtube.com",
@@ -280,6 +280,8 @@ var REAL_URLS = {
   Snapchat: "https://web.snapchat.com"
 };
 var browserListenerAttached = false;
+var whatsappSessionActive = false;
+var whatsappVisibilityAttached = false;
 
 function enterSession(i){
   activeIdx = i;
@@ -292,8 +294,25 @@ function enterSession(i){
 
   var Browser = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
   var url = REAL_URLS[appName];
+  var isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
 
-  if(Browser && url){
+  if(isNative && appName === "WhatsApp"){
+    // WhatsApp has no real mobile-web client (web.whatsapp.com just asks to pair via QR).
+    // Deep-link straight into the installed WhatsApp app instead.
+    document.getElementById("sess-content").innerHTML =
+      '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening the WhatsApp app…</p>';
+    whatsappSessionActive = true;
+    if(!whatsappVisibilityAttached){
+      whatsappVisibilityAttached = true;
+      document.addEventListener("visibilitychange", function(){
+        if(document.visibilityState === "visible" && whatsappSessionActive){
+          whatsappSessionActive = false;
+          exitSession();
+        }
+      });
+    }
+    window.location.href = "whatsapp://";
+  } else if(Browser && url){
     // Real device: launch the actual site in an in-app browser tab
     document.getElementById("sess-content").innerHTML =
       '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening ' + appName + '… this tab is tracking your time. Close it to return here.</p>';
