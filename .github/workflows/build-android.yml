@@ -29,6 +29,27 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
+      - name: Allow app to launch WhatsApp (Android 11+ package visibility)
+        run: |
+          python3 - << 'PYEOF'
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path) as f:
+              content = f.read()
+          queries = '''    <queries>
+                  <package android:name="com.whatsapp" />
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="whatsapp" />
+                  </intent>
+              </queries>
+
+          '''
+          content = content.replace("</manifest>", queries + "</manifest>")
+          with open(path, "w") as f:
+              f.write(content)
+          print("Manifest patched")
+          PYEOF
+
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
