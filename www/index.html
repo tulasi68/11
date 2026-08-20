@@ -155,26 +155,86 @@
 
 <script>
 /* ---------- data ---------- */
-var ICONS = {Instagram:"📸", WhatsApp:"💬", Facebook:"👥", TikTok:"🎵", YouTube:"▶️", X:"✖️", Reddit:"🤖", Snapchat:"👻"};
 var COLORS = ["var(--c-pink)","var(--c-teal)","var(--c-blue)","var(--c-purple)","var(--c-orange)","var(--c-red)","var(--c-grey)"];
-var APP_LIST = Object.keys(ICONS);
+
+// Used only as a fallback when the native "list installed apps" plugin isn't
+// available (e.g. viewing this as a plain webpage instead of the installed app).
+// On a real device, the Apps & Limits screen instead lists YOUR actual installed apps.
+var FALLBACK_APPS = [
+  {name:"Instagram", packageName:"com.instagram.android"},
+  {name:"WhatsApp", packageName:"com.whatsapp"},
+  {name:"Facebook", packageName:"com.facebook.katana"},
+  {name:"TikTok", packageName:"com.zhiliaoapp.musically"},
+  {name:"YouTube", packageName:"com.google.android.youtube"},
+  {name:"X", packageName:"com.twitter.android"},
+  {name:"Reddit", packageName:"com.reddit.frontpage"},
+  {name:"Snapchat", packageName:"com.snapchat.android"},
+  {name:"Telegram", packageName:"org.telegram.messenger"},
+  {name:"Discord", packageName:"com.discord"},
+  {name:"LinkedIn", packageName:"com.linkedin.android"},
+  {name:"Pinterest", packageName:"com.pinterest"},
+  {name:"Spotify", packageName:"com.spotify.music"},
+  {name:"Netflix", packageName:"com.netflix.mediaclient"},
+  {name:"Gmail", packageName:"com.google.android.gm"}
+];
 
 var state = loadState() || {
   apps: [
-    {name:"Instagram", limit:30, today:0},
-    {name:"WhatsApp", limit:45, today:0},
-    {name:"Facebook", limit:20, today:0},
-    {name:"TikTok", limit:15, today:0}
+    {name:"Instagram", packageName:"com.instagram.android", limit:30, todaySec:0},
+    {name:"WhatsApp", packageName:"com.whatsapp", limit:45, todaySec:0},
+    {name:"Facebook", packageName:"com.facebook.katana", limit:20, todaySec:0},
+    {name:"TikTok", packageName:"com.zhiliaoapp.musically", limit:15, todaySec:0}
   ],
-  streak: 1
+  streak: 1,
+  lastActiveDate: null,
+  history: {} // { "YYYY-MM-DD": { packageName: seconds, ... }, ... } — real past-day totals
 };
 
+// Bumped storage key since the data shape changed (seconds instead of minutes,
+// packageName instead of just a name, real history instead of none). Old saved
+// data under the previous key is simply left behind — a one-time reset.
 function loadState(){
-  try{ var s = localStorage.getItem("facegramapp_state"); return s ? JSON.parse(s) : null; }catch(e){ return null; }
+  try{ var s = localStorage.getItem("facegramapp_state_v2"); return s ? JSON.parse(s) : null; }catch(e){ return null; }
 }
 function saveState(){
-  try{ localStorage.setItem("facegramapp_state", JSON.stringify(state)); }catch(e){}
+  try{ localStorage.setItem("facegramapp_state_v2", JSON.stringify(state)); }catch(e){}
 }
+
+function todayKey(d){
+  d = d || new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+
+// Detects a real calendar-day rollover (not just "app reopened"), archives
+// yesterday's totals into history, updates the balanced-day streak, and
+// resets today's counters to zero. This is what makes Week/Month real instead
+// of a guess — each day's true totals get preserved as they happen.
+function ensureRollover(){
+  var key = todayKey();
+  if(state.lastActiveDate !== key){
+    if(state.lastActiveDate){
+      var snapshot = {};
+      state.apps.forEach(function(a){ snapshot[a.packageName] = a.todaySec; });
+      state.history[state.lastActiveDate] = snapshot;
+
+      var totalSec = state.apps.reduce(function(s,a){return s+a.todaySec;},0);
+      var budgetSec = state.apps.reduce(function(s,a){return s+a.limit*60;},0);
+      if(totalSec <= budgetSec){ state.streak = (state.streak||0) + 1; }
+      else { state.streak = 1; }
+    }
+    state.apps.forEach(function(a){ a.todaySec = 0; });
+    state.lastActiveDate = key;
+    saveState();
+  }
+}
+
+function formatDuration(sec){
+  sec = Math.max(0, Math.round(sec));
+  if(sec < 60) return sec + "s";
+  var m = Math.floor(sec/60), s = sec%60;
+  return s > 0 ? (m + "m " + s + "s") : (m + "m");
+}
+function badgeLetter(name){ return name ? name.charAt(0).toUpperCase() : "?"; }
 
 /* ---------- nav ---------- */
 function showTab(tab){
@@ -196,45 +256,81 @@ var moods = [
   {max:9999, label:"That's a lot of scrolling today", mouth:"M 32 70 Q 50 58 68 70"}
 ];
 function renderHome(){
-  var total = state.apps.reduce(function(a,b){return a+b.today;},0);
-  var budget = state.apps.reduce(function(a,b){return a+b.limit;},0) || 1;
-  var ratio = total / budget;
+  ensureRollover();
+  var totalSec = state.apps.reduce(function(a,b){return a+b.todaySec;},0);
+  var budgetMin = state.apps.reduce(function(a,b){return a+b.limit;},0) || 1;
+  var ratio = totalSec / (budgetMin*60);
   var m = moods.find(function(x){ return ratio <= x.max; });
   document.getElementById("mouth").setAttribute("d", m.mouth);
   document.getElementById("mood-label").textContent = m.label;
-  document.getElementById("mood-sub").textContent = total + " min total so far (of " + budget + " min budget)";
+  document.getElementById("mood-sub").textContent = formatDuration(totalSec) + " total so far (of " + budgetMin + " min budget)";
   document.getElementById("streak-text").textContent = state.streak + "-day balanced streak";
 
-  var max = Math.max.apply(null, state.apps.map(function(a){return a.limit;})) || 1;
   document.getElementById("home-bars").innerHTML = state.apps.map(function(a,i){
-    var pct = Math.min(100, Math.round(a.today / a.limit * 100)) || 0;
+    var limitSec = a.limit*60;
+    var pct = Math.min(100, Math.round(a.todaySec / limitSec * 100)) || 0;
     return '<div class="bar-row">'+
       '<div style="display:flex; align-items:center; gap:8px;">'+
-        '<span class="app-icon" style="width:28px; height:28px; font-size:13px; background:'+COLORS[i%COLORS.length]+'; flex-shrink:0;">'+(ICONS[a.name]||"📱")+'</span>'+
-        '<div class="lbl" style="flex:1; margin:0;"><span>'+a.name+'</span><span>'+a.today+' / '+a.limit+' min</span></div>'+
+        '<span class="app-icon" style="width:28px; height:28px; font-size:13px; background:'+COLORS[i%COLORS.length]+'; flex-shrink:0;">'+badgeLetter(a.name)+'</span>'+
+        '<div class="lbl" style="flex:1; margin:0;"><span>'+a.name+'</span><span>'+formatDuration(a.todaySec)+' / '+a.limit+' min</span></div>'+
         '<span style="font-size:20px; color:var(--text-muted); flex-shrink:0;">›</span>'+
       '</div>'+
       '<div class="bar-track" style="margin-top:6px;"><div class="bar-fill" style="width:'+pct+'%; background:'+COLORS[i%COLORS.length]+';"></div></div></div>';
   }).join("");
+
+  document.querySelectorAll("#home-bars .bar-row").forEach(function(row, i){
+    row.style.cursor = "pointer";
+    row.addEventListener("click", function(){ enterSession(i); });
+  });
 }
 
 /* ---------- apps & limits ---------- */
-function renderApps(){
-  var html = state.apps.map(function(a, i){
-    var opts = APP_LIST.map(function(n){ return '<option'+(n===a.name?' selected':'')+'>'+n+'</option>'; }).join("");
-    return '<div class="slot">'+
-      '<span class="app-icon" style="background:'+COLORS[i%COLORS.length]+';">'+ICONS[a.name]+'</span>'+
-      '<select class="app-select" onchange="changeApp('+i+',this.value)">'+opts+'</select>'+
-      '<div class="stepper">'+
-        '<button onclick="changeLimit('+i+',-5)">−</button>'+
-        '<span class="val" id="lim-'+i+'">'+a.limit+' min</span>'+
-        '<button onclick="changeLimit('+i+',5)">+</button>'+
-      '</div></div>';
-  }).join("");
-  document.getElementById("slots-card").innerHTML = html;
-  document.getElementById("overall-val").textContent = state.apps.reduce(function(a,b){return a+b.limit;},0) + " min";
+var installedAppsCache = null;
+function fetchAppList(callback){
+  if(installedAppsCache){ callback(installedAppsCache); return; }
+  var isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+  var AppLauncher = isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.AppLauncher;
+  if(AppLauncher && AppLauncher.getInstalledApps){
+    AppLauncher.getInstalledApps().then(function(res){
+      var apps = (res && res.apps && res.apps.length) ? res.apps : FALLBACK_APPS;
+      apps.sort(function(a,b){ return a.name.localeCompare(b.name); });
+      installedAppsCache = apps;
+      callback(installedAppsCache);
+    }).catch(function(){
+      installedAppsCache = FALLBACK_APPS;
+      callback(installedAppsCache);
+    });
+  } else {
+    installedAppsCache = FALLBACK_APPS;
+    callback(installedAppsCache);
+  }
 }
-function changeApp(i, name){ state.apps[i].name = name; saveState(); renderApps(); }
+function renderApps(){
+  fetchAppList(function(allApps){
+    var html = state.apps.map(function(a, i){
+      var opts = allApps.map(function(opt){
+        return '<option value="'+opt.packageName+'"'+(opt.packageName===a.packageName?' selected':'')+'>'+opt.name+'</option>';
+      }).join("");
+      return '<div class="slot">'+
+        '<span class="app-icon" style="background:'+COLORS[i%COLORS.length]+';">'+badgeLetter(a.name)+'</span>'+
+        '<select class="app-select" onchange="changeApp('+i+',this.value)">'+opts+'</select>'+
+        '<div class="stepper">'+
+          '<button onclick="changeLimit('+i+',-5)">−</button>'+
+          '<span class="val" id="lim-'+i+'">'+a.limit+' min</span>'+
+          '<button onclick="changeLimit('+i+',5)">+</button>'+
+        '</div></div>';
+    }).join("");
+    document.getElementById("slots-card").innerHTML = html;
+    document.getElementById("overall-val").textContent = state.apps.reduce(function(a,b){return a+b.limit;},0) + " min";
+  });
+}
+function changeApp(i, packageName){
+  var found = (installedAppsCache || FALLBACK_APPS).find(function(x){ return x.packageName === packageName; });
+  state.apps[i].packageName = packageName;
+  state.apps[i].name = found ? found.name : packageName;
+  saveState();
+  renderApps();
+}
 function changeLimit(i, delta){
   state.apps[i].limit = Math.max(5, Math.min(240, state.apps[i].limit + delta));
   document.getElementById("lim-"+i).textContent = state.apps[i].limit + " min";
@@ -250,122 +346,119 @@ document.getElementById("period-tabs").addEventListener("click", function(e){
   document.querySelectorAll("#period-tabs button").forEach(function(b){ b.classList.toggle("active", b === e.target); });
   renderSummary(currentPeriod);
 });
+// Real aggregation across actual tracked days — today's live counters plus
+// however many past days exist in history (a fresh install will simply show
+// the same total for Day/Week/Month until real history accumulates, which is
+// the honest result, rather than the old fake ×7 / ×30 guess).
 function renderSummary(period){
-  var mult = period === "day" ? 1 : (period === "week" ? 7 : 30);
-  var rows = state.apps.map(function(a,i){
-    var mins = Math.round(a.today>0 ? a.today*mult*(0.7+0.6*Math.random()) : a.limit*0.5*mult*0.4);
-    return {name:a.name, mins:mins, color:COLORS[i%COLORS.length]};
+  ensureRollover();
+  var days = period === "day" ? 1 : (period === "week" ? 7 : 30);
+  var todayStr = todayKey();
+  var dateKeys = [];
+  for(var d=0; d<days; d++){
+    var dt = new Date();
+    dt.setDate(dt.getDate() - d);
+    dateKeys.push(todayKey(dt));
+  }
+  var totalsByPkg = {};
+  state.apps.forEach(function(a){ totalsByPkg[a.packageName] = 0; });
+  dateKeys.forEach(function(key){
+    if(key === todayStr){
+      state.apps.forEach(function(a){ totalsByPkg[a.packageName] += a.todaySec; });
+    } else if(state.history[key]){
+      Object.keys(state.history[key]).forEach(function(pkg){
+        if(totalsByPkg.hasOwnProperty(pkg)) totalsByPkg[pkg] += state.history[key][pkg];
+      });
+    }
   });
-  var total = rows.reduce(function(s,r){return s+r.mins;},0);
-  var budget = state.apps.reduce(function(a,b){return a+b.limit;},0) * mult;
-  document.getElementById("summary-total").innerHTML = (period[0].toUpperCase()+period.slice(1)) + " total: <strong style='color:var(--text-primary)'>" + total + " min</strong> of " + budget + " min budget";
-  var max = Math.max.apply(null, rows.map(function(r){return r.mins;})) || 1;
+  var rows = state.apps.map(function(a,i){
+    return {name:a.name, sec: totalsByPkg[a.packageName]||0, color: COLORS[i%COLORS.length]};
+  });
+  var totalSec = rows.reduce(function(s,r){return s+r.sec;},0);
+  var budgetMin = state.apps.reduce(function(a,b){return a+b.limit;},0) * days;
+  document.getElementById("summary-total").innerHTML = (period[0].toUpperCase()+period.slice(1)) + " total: <strong style='color:var(--text-primary)'>" + formatDuration(totalSec) + "</strong> of " + budgetMin + " min budget";
+  var max = Math.max.apply(null, rows.map(function(r){return r.sec;})) || 1;
   document.getElementById("summary-bars").innerHTML = rows.map(function(r){
-    var pct = Math.round(r.mins/max*100);
-    return '<div class="bar-row"><div class="lbl"><span>'+r.name+'</span><span>'+r.mins+' min</span></div>'+
+    var pct = Math.round(r.sec/max*100);
+    return '<div class="bar-row"><div class="lbl"><span>'+r.name+'</span><span>'+formatDuration(r.sec)+'</span></div>'+
       '<div class="bar-track"><div class="bar-fill" style="width:'+pct+'%; background:'+r.color+';"></div></div></div>';
   }).join("");
 }
 
 /* ---------- session ---------- */
-var activeIdx = null, sessInterval = null, sessSeconds = 0, limitFired = false;
-var REAL_URLS = {
-  Instagram: "https://www.instagram.com",
-  WhatsApp: "whatsapp://",
-  Facebook: "https://m.facebook.com",
-  TikTok: "https://www.tiktok.com",
-  YouTube: "https://m.youtube.com",
-  X: "https://mobile.twitter.com",
-  Reddit: "https://www.reddit.com",
-  Snapchat: "https://web.snapchat.com"
-};
-var browserListenerAttached = false;
-var whatsappSessionActive = false;
-var whatsappVisibilityAttached = false;
+// Every configured app now launches the same way: ask Android for that app's
+// own launch intent by package name (the AppLauncher native plugin), the same
+// mechanism used when tapping its icon on the home screen. This replaced the
+// earlier per-app mix of mobile-web Custom Tabs and guessed URI schemes, since
+// with a dynamic, any-installed-app list, package-name launch is the one
+// mechanism that reliably works for literally any app.
+var activeIdx = null, sessInterval = null, sessionStartTime = null, limitFired = false;
+var sessionActive = false, visibilityListenerAttached = false;
 
 function enterSession(i){
   activeIdx = i;
-  sessSeconds = 0; limitFired = false;
-  var appName = state.apps[i].name;
-  document.getElementById("sess-app-name").textContent = appName;
+  limitFired = false;
+  sessionStartTime = Date.now();
+  var app = state.apps[i];
+  document.getElementById("sess-app-name").textContent = app.name;
   document.getElementById("session-screen").style.display = "block";
   document.getElementById("timer").textContent = "0:00";
   document.getElementById("mouth-mini").setAttribute("d", moods[0].mouth);
 
-  var Browser = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
-  var url = REAL_URLS[appName];
   var isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+  var AppLauncher = isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.AppLauncher;
 
-  if(isNative && appName === "WhatsApp"){
-    // WhatsApp has no real mobile-web client, and URI-scheme deep links proved unreliable
-    // across devices. Ask Android directly for WhatsApp's own launch intent instead —
-    // the same mechanism used when tapping its icon on the home screen.
+  if(AppLauncher && app.packageName){
     document.getElementById("sess-content").innerHTML =
-      '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening the WhatsApp app…</p>'+
-      '<p style="text-align:center;"><a id="wa-manual-link" href="whatsapp://" style="font-size:13px; color:var(--accent); text-decoration:underline; display:none;">Tap here if it didn\'t open automatically</a></p>';
-    whatsappSessionActive = true;
-    if(!whatsappVisibilityAttached){
-      whatsappVisibilityAttached = true;
-      document.addEventListener("visibilitychange", function(){
-        if(document.visibilityState === "visible" && whatsappSessionActive){
-          whatsappSessionActive = false;
-          exitSession();
-        }
-      });
-    }
-    var AppLauncher = window.Capacitor.Plugins && window.Capacitor.Plugins.AppLauncher;
-    function showManualFallback(){
-      var manualLink = document.getElementById("wa-manual-link");
-      if(manualLink) manualLink.style.display = "inline";
-    }
-    if(AppLauncher){
-      AppLauncher.openPackage({ packageName: "com.whatsapp" }).catch(function(){
-        // regular WhatsApp not found — try WhatsApp Business before giving up
-        return AppLauncher.openPackage({ packageName: "com.whatsapp.w4b" });
-      }).catch(function(){
-        showManualFallback();
-      });
-    } else {
-      showManualFallback();
-    }
-  } else if(Browser && url){
-    // Real device: launch the actual site in an in-app browser tab
-    document.getElementById("sess-content").innerHTML =
-      '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening ' + appName + '… this tab is tracking your time. Close it to return here.</p>';
-    if(!browserListenerAttached){
-      browserListenerAttached = true;
-      Browser.addListener("browserFinished", function(){ exitSession(); });
-    }
-    Browser.open({ url: url });
+      '<p style="text-align:center; padding:30px 20px; color:var(--text-muted); font-size:13px;">Opening ' + app.name + '…</p>'+
+      '<p id="sess-fallback-msg" style="text-align:center; font-size:12px; color:var(--text-muted); display:none; padding:0 20px;">Couldn\'t open ' + app.name + ' automatically — make sure it\'s installed, then use the back arrow to return.</p>';
+    AppLauncher.openPackage({ packageName: app.packageName }).catch(function(){
+      var msg = document.getElementById("sess-fallback-msg");
+      if(msg) msg.style.display = "block";
+    });
   } else {
-    // Not running natively (e.g. viewing in a normal web browser): show mock content instead
+    // Not running natively: show mock content so the concept still works as a demo
     document.getElementById("sess-content").innerHTML =
       '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Contact 1</div><div style="font-size:12px; color:var(--text-secondary);">Hey, are we still on for later?</div></div></div>'+
       '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Contact 2</div><div style="font-size:12px; color:var(--text-secondary);">Sent the photos over</div></div></div>'+
       '<div class="msg-row"><div class="avatar"></div><div><div style="font-size:13.5px; font-weight:600;">Group chat</div><div style="font-size:12px; color:var(--text-secondary);">3 new messages</div></div></div>'+
-      '<p style="text-align:center; font-size:11px; color:var(--text-muted); padding:14px;">(Demo content — install as a native app to open the real site)</p>';
+      '<p style="text-align:center; font-size:11px; color:var(--text-muted); padding:14px;">(Demo content — install as a native app to open the real app)</p>';
   }
 
+  if(!visibilityListenerAttached){
+    visibilityListenerAttached = true;
+    document.addEventListener("visibilitychange", function(){
+      if(document.visibilityState === "visible" && sessionActive){
+        sessionActive = false;
+        exitSession();
+      }
+    });
+  }
+  sessionActive = true;
+
   sessInterval = setInterval(function(){
-    sessSeconds += 3; // sped up for demo/web mode; real native sessions could switch this to +1 for true real-time tracking
-    var mn = Math.floor(sessSeconds/60), sc = sessSeconds%60;
+    var elapsedSec = Math.round((Date.now() - sessionStartTime) / 1000);
+    var mn = Math.floor(elapsedSec/60), sc = elapsedSec%60;
     document.getElementById("timer").textContent = mn + ":" + String(sc).padStart(2,"0");
-    var elapsedMin = sessSeconds/60;
-    var ratio = elapsedMin / state.apps[i].limit;
+    var limitSec = app.limit * 60;
+    var ratio = elapsedSec / limitSec;
     var m = moods.find(function(x){ return ratio <= x.max; });
     document.getElementById("mouth-mini").setAttribute("d", m.mouth);
-    if(elapsedMin >= state.apps[i].limit && !limitFired){
+    if(elapsedSec >= limitSec && !limitFired){
       limitFired = true;
-      showLimitModal(state.apps[i].name);
+      showLimitModal(app.name);
     }
-  }, 400);
+  }, 1000);
 }
 function exitSession(){
   clearInterval(sessInterval);
-  if(activeIdx !== null){
-    state.apps[activeIdx].today += Math.round(sessSeconds/60) || 1;
+  sessionActive = false;
+  if(activeIdx !== null && sessionStartTime){
+    var elapsedSec = Math.round((Date.now() - sessionStartTime) / 1000);
+    state.apps[activeIdx].todaySec += elapsedSec;
     saveState();
   }
+  sessionStartTime = null;
   document.getElementById("session-screen").style.display = "none";
   showTab("home");
 }
@@ -381,17 +474,6 @@ function closeLimitModal(stop){
   if(stop) exitSession();
 }
 
-/* wire home rows to open sessions (delegate, since bars re-render) */
-document.getElementById("home-bars") && document.getElementById("home-bars").addEventListener("click", function(){});
-function wireHomeTaps(){
-  document.querySelectorAll("#home-bars .bar-row").forEach(function(row, i){
-    row.style.cursor = "pointer";
-    row.addEventListener("click", function(){ enterSession(i); });
-  });
-}
-var _origRenderHome = renderHome;
-renderHome = function(){ _origRenderHome(); wireHomeTaps(); };
-
 /* ---------- install hint (iOS only, if not already installed) ---------- */
 (function(){
   var isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
@@ -399,6 +481,7 @@ renderHome = function(){ _origRenderHome(); wireHomeTaps(); };
 })();
 
 /* init */
+ensureRollover();
 renderHome();
 renderApps();
 </script>
