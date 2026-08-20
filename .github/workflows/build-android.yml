@@ -29,12 +29,29 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Allow app to query WhatsApp (Android 11+ package visibility)
+      - name: Patch AndroidManifest (package visibility + RECORD_AUDIO)
         run: |
           python3 - << 'PYEOF'
           path = "android/app/src/main/AndroidManifest.xml"
           with open(path) as f:
               content = f.read()
+
+          # RECORD_AUDIO permission for speech recognition
+          if 'android.permission.RECORD_AUDIO' not in content:
+              content = content.replace(
+                  '<manifest',
+                  '<manifest',
+                  1
+              )
+              # Insert permission after the opening <manifest ...> tag block
+              import re
+              content = re.sub(
+                  r'(<manifest[^>]*>)',
+                  r'\1\n    <uses-permission android:name="android.permission.RECORD_AUDIO" />',
+                  content,
+                  count=1
+              )
+
           queries = '''    <queries>
                   <package android:name="com.whatsapp" />
                   <package android:name="com.whatsapp.w4b" />
@@ -42,16 +59,20 @@ jobs:
                       <action android:name="android.intent.action.VIEW" />
                       <data android:scheme="whatsapp" />
                   </intent>
+                  <intent>
+                      <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+                  </intent>
               </queries>
 
           '''
-          content = content.replace("</manifest>", queries + "</manifest>")
+          if '<queries>' not in content:
+              content = content.replace("</manifest>", queries + "</manifest>")
           with open(path, "w") as f:
               f.write(content)
-          print("Manifest patched")
+          print("Manifest patched (RECORD_AUDIO + queries)")
           PYEOF
 
-      - name: Add native AppLauncher plugin (real WhatsApp launch)
+      - name: Add native AppLauncher + Speech Recognition plugin
         run: |
           JAVA_DIR="android/app/src/main/java/com/tulasi/facegramapp"
           mkdir -p "$JAVA_DIR"
@@ -59,13 +80,26 @@ jobs:
           cat << 'JAVAEOF' > "$JAVA_DIR/AppLauncherPlugin.java"
           package com.tulasi.facegramapp;
 
+          import android.app.Activity;
           import android.content.Intent;
+          import android.speech.RecognizerIntent;
+          import androidx.activity.result.ActivityResult;
+          import com.getcapacitor.JSObject;
           import com.getcapacitor.Plugin;
           import com.getcapacitor.PluginCall;
           import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.ActivityCallback;
           import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import java.util.ArrayList;
+          import java.util.Locale;
 
-          @CapacitorPlugin(name = "AppLauncher")
+          @CapacitorPlugin(
+              name = "AppLauncher",
+              permissions = {
+                  @Permission(strings = { android.Manifest.permission.RECORD_AUDIO }, alias = "speechRecognition")
+              }
+          )
           public class AppLauncherPlugin extends Plugin {
 
               @PluginMethod
@@ -83,6 +117,54 @@ jobs:
                   } else {
                       call.reject("App not installed: " + packageName);
                   }
+              }
+
+              /**
+               * Starts the system Android speech recognizer (RecognizerIntent).
+               * Shows the familiar Android "Speak now" UI — ideal for seniors.
+               * Returns { text: "recognized words" } or rejects on cancel/error.
+               */
+              @PluginMethod
+              public void startSpeechRecognition(PluginCall call) {
+                  if (!android.speech.SpeechRecognizer.isRecognitionAvailable(getContext())) {
+                      call.reject("Speech recognition is not available on this device");
+                      return;
+                  }
+
+                  String prompt = call.getString("prompt", "Say a command, for example Open WhatsApp");
+                  Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                  intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                  intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
+                  intent.putExtra(RecognizerIntent.EXTRA_PROMPT, prompt);
+                  intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+
+                  try {
+                      startActivityForResult(call, intent, "speechResult");
+                  } catch (Exception e) {
+                      call.reject("Could not start speech recognition: " + e.getMessage());
+                  }
+              }
+
+              @ActivityCallback
+              private void speechResult(PluginCall call, ActivityResult result) {
+                  if (call == null) return;
+
+                  if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+                      call.reject("Speech recognition cancelled or failed");
+                      return;
+                  }
+
+                  ArrayList<String> matches = result.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                  if (matches == null || matches.isEmpty()) {
+                      call.reject("No speech detected");
+                      return;
+                  }
+
+                  JSObject ret = new JSObject();
+                  ret.put("text", matches.get(0));
+                  // Also expose all alternatives for future fuzzy matching
+                  ret.put("matches", matches);
+                  call.resolve(ret);
               }
           }
           JAVAEOF
