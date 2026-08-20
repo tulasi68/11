@@ -68,6 +68,15 @@
   .modal p.title{font-size:15px; font-weight:700; margin:10px 0 6px;}
   .modal p.body{font-size:13px; color:var(--text-secondary); margin:0 0 18px;}
   .install-hint{font-size:11.5px; color:var(--text-muted); background:var(--surface2); border-radius:10px; padding:9px 12px; margin:0 0 14px; text-align:center;}
+  /* Voice / mic button for seniors */
+  .voice-bar{display:flex; flex-direction:column; align-items:center; gap:8px; margin:16px 0 8px;}
+  .mic-btn{width:72px; height:72px; border-radius:50%; border:none; background:var(--accent); color:#fff; font-size:32px; cursor:pointer; box-shadow:0 4px 14px rgba(42,75,124,0.35); display:flex; align-items:center; justify-content:center; transition:transform .15s, background .2s;}
+  .mic-btn:active{transform:scale(0.94);}
+  .mic-btn.listening{background:#B5473A; animation:pulse 1.2s ease-in-out infinite;}
+  .mic-btn.processing{background:var(--c-teal);}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(181,71,58,0.45);} 50%{box-shadow:0 0 0 14px rgba(181,71,58,0);}}
+  .voice-status{font-size:13px; color:var(--text-secondary); min-height:18px; text-align:center; font-weight:500;}
+  .voice-hint{font-size:11.5px; color:var(--text-muted); text-align:center; margin:0;}
 </style>
 </head>
 <body>
@@ -89,6 +98,14 @@
         <p class="mood-sub" id="mood-sub">0 min total so far</p>
       </div>
       <div class="streak"><span>🔥</span><span id="streak-text">1-day balanced streak</span></div>
+
+      <!-- Large voice button for seniors -->
+      <div class="voice-bar">
+        <button class="mic-btn" id="mic-btn" onclick="startVoiceCommand()" aria-label="Voice command">🎤</button>
+        <p class="voice-status" id="voice-status">Tap the mic and speak</p>
+        <p class="voice-hint">Try: “Open WhatsApp”, “Status”, “Help”</p>
+      </div>
+
       <p style="font-size:11.5px; color:var(--text-muted); margin:0 0 8px;">Tap an app below to open it</p>
       <div id="home-bars"></div>
     </div>
@@ -479,6 +496,298 @@ function closeLimitModal(stop){
   var isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
   if(isStandalone){ document.getElementById("install-hint").style.display = "none"; }
 })();
+
+/* ---------- Voice commands (Android Speech Recognition + TTS) ---------- */
+var voiceListening = false;
+var recognition = null;
+
+function setVoiceUI(state, message){
+  var btn = document.getElementById("mic-btn");
+  var status = document.getElementById("voice-status");
+  if(!btn || !status) return;
+  btn.classList.remove("listening", "processing");
+  if(state === "listening") btn.classList.add("listening");
+  if(state === "processing") btn.classList.add("processing");
+  status.textContent = message || "";
+}
+
+function speak(text){
+  if(!window.speechSynthesis) return;
+  try{
+    window.speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(text);
+    u.rate = 0.95;
+    u.pitch = 1;
+    u.lang = "en-US";
+    window.speechSynthesis.speak(u);
+  }catch(e){}
+}
+
+function normalize(s){
+  return (s || "").toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function findAppBySpokenName(spoken){
+  var t = normalize(spoken);
+  // Prefer longer / more specific matches
+  var best = null, bestScore = 0;
+  state.apps.forEach(function(a, i){
+    var name = normalize(a.name);
+    if(!name) return;
+    if(t.indexOf(name) !== -1 || name.indexOf(t) !== -1){
+      var score = name.length;
+      if(score > bestScore){ bestScore = score; best = {app: a, index: i}; }
+    }
+    // common short aliases
+    var aliases = {
+      "instagram": ["insta", "ig"],
+      "whatsapp": ["whats app", "whats", "wa"],
+      "facebook": ["fb", "face book"],
+      "tiktok": ["tik tok", "tick tock"],
+      "youtube": ["you tube", "yt"],
+      "twitter": ["x"],
+      "reddit": ["redit"]
+    };
+    var key = name.replace(/\s+/g, "");
+    if(aliases[key]){
+      aliases[key].forEach(function(al){
+        if(t.indexOf(al) !== -1 && name.length > bestScore){
+          bestScore = name.length; best = {app: a, index: i};
+        }
+      });
+    }
+  });
+  return best;
+}
+
+function handleVoiceCommand(transcript){
+  var t = normalize(transcript);
+  if(!t){
+    speak("Sorry, I didn't catch that. Please try again.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+
+  // HELP
+  if(/\b(help|what can i say|commands|options)\b/.test(t)){
+    var help = "You can say: Open followed by an app name. Status. Home. Apps. Summary. Day, Week or Month. Take a break. Or Help.";
+    speak(help);
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+
+  // TAKE A BREAK / STOP (when limit modal is open)
+  if(/\b(take a break|stop|enough|close modal|okay|ok)\b/.test(t)){
+    var overlay = document.getElementById("limit-overlay");
+    if(overlay && overlay.style.display === "flex"){
+      closeLimitModal(true);
+      speak("Okay, taking a break.");
+      setVoiceUI("idle", "Tap the mic and speak");
+      return;
+    }
+  }
+
+  // OPEN / START / LAUNCH app
+  if(/\b(open|start|launch|go to|run)\b/.test(t)){
+    var match = findAppBySpokenName(t);
+    if(match){
+      speak("Opening " + match.app.name + " now.");
+      setVoiceUI("idle", "Opening " + match.app.name + "…");
+      setTimeout(function(){ enterSession(match.index); }, 600);
+      return;
+    }
+    // try bare app name after the verb
+    speak("I couldn't find that app among your four configured apps. Try saying Open and the exact name.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+
+  // Bare app name as shortcut for open
+  var bare = findAppBySpokenName(t);
+  if(bare && t.split(" ").length <= 3){
+    speak("Opening " + bare.app.name + " now.");
+    setVoiceUI("idle", "Opening " + bare.app.name + "…");
+    setTimeout(function(){ enterSession(bare.index); }, 600);
+    return;
+  }
+
+  // STATUS / TIME / STREAK
+  if(/\b(status|how much|time left|time used|streak|balance|summary of today)\b/.test(t)){
+    ensureRollover();
+    var totalSec = state.apps.reduce(function(s,a){ return s + a.todaySec; }, 0);
+    var budgetMin = state.apps.reduce(function(s,a){ return s + a.limit; }, 0);
+    var parts = state.apps.map(function(a){
+      return a.name + " " + formatDuration(a.todaySec) + " of " + a.limit + " minutes";
+    });
+    var msg = "Today you have used " + formatDuration(totalSec) + " out of " + budgetMin + " minutes. " +
+              parts.join(". ") + ". Streak is " + state.streak + " day" + (state.streak === 1 ? "" : "s") + ".";
+    speak(msg);
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+
+  // NAVIGATION
+  if(/\b(home|go home|main)\b/.test(t)){
+    showTab("home");
+    speak("Home screen.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+  if(/\b(apps|app limits|manage apps|limits)\b/.test(t)){
+    showTab("apps");
+    speak("Apps and limits.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+  if(/\b(summary|report|history)\b/.test(t)){
+    showTab("summary");
+    speak("Summary.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+
+  // Period on summary
+  if(/\b(day|today)\b/.test(t)){
+    currentPeriod = "day";
+    document.querySelectorAll("#period-tabs button").forEach(function(b){
+      b.classList.toggle("active", b.dataset.period === "day");
+    });
+    showTab("summary");
+    renderSummary("day");
+    speak("Showing today.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+  if(/\b(week|weekly)\b/.test(t)){
+    currentPeriod = "week";
+    document.querySelectorAll("#period-tabs button").forEach(function(b){
+      b.classList.toggle("active", b.dataset.period === "week");
+    });
+    showTab("summary");
+    renderSummary("week");
+    speak("Showing this week.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+  if(/\b(month|monthly)\b/.test(t)){
+    currentPeriod = "month";
+    document.querySelectorAll("#period-tabs button").forEach(function(b){
+      b.classList.toggle("active", b.dataset.period === "month");
+    });
+    showTab("summary");
+    renderSummary("month");
+    speak("Showing this month.");
+    setVoiceUI("idle", "Tap the mic and speak");
+    return;
+  }
+
+  // Fallback
+  speak("Sorry, I didn't understand. Say Help to hear the commands.");
+  setVoiceUI("idle", "Tap the mic and speak");
+}
+
+function startVoiceCommand(){
+  if(voiceListening){
+    stopVoiceRecognition();
+    return;
+  }
+
+  var isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+  var AppLauncher = isNative && window.Capacitor.Plugins && window.Capacitor.Plugins.AppLauncher;
+
+  // Prefer native Android speech recognition when the plugin method exists
+  if(AppLauncher && AppLauncher.startSpeechRecognition){
+    // Request microphone permission first (Capacitor will show the system dialog)
+    var permPromise = AppLauncher.requestPermissions
+      ? AppLauncher.requestPermissions({ permissions: ["speechRecognition"] })
+      : Promise.resolve();
+
+    permPromise.then(function(){
+      setVoiceUI("listening", "Listening… speak now");
+      voiceListening = true;
+      return AppLauncher.startSpeechRecognition({ prompt: "Say a command, for example Open WhatsApp" });
+    }).then(function(res){
+      voiceListening = false;
+      setVoiceUI("processing", "Got it…");
+      var text = (res && (res.text || res.transcript || (res.matches && res.matches[0]))) || "";
+      handleVoiceCommand(text);
+    }).catch(function(err){
+      voiceListening = false;
+      console.warn("Native speech failed, falling back", err);
+      // If user denied permission or recognizer unavailable, try web API as last resort
+      startWebSpeechRecognition();
+    });
+    return;
+  }
+
+  // Fallback: Web Speech API (uses Android system recognizer on most devices)
+  startWebSpeechRecognition();
+}
+
+function startWebSpeechRecognition(){
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SpeechRecognition){
+    speak("Speech recognition is not available on this device.");
+    setVoiceUI("idle", "Speech not available");
+    return;
+  }
+
+  try{
+    if(recognition){
+      try{ recognition.stop(); }catch(e){}
+    }
+    recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 3;
+    recognition.continuous = false;
+
+    recognition.onstart = function(){
+      voiceListening = true;
+      setVoiceUI("listening", "Listening… speak now");
+    };
+    recognition.onresult = function(event){
+      voiceListening = false;
+      setVoiceUI("processing", "Got it…");
+      var text = "";
+      if(event.results && event.results[0] && event.results[0][0]){
+        text = event.results[0][0].transcript;
+      }
+      handleVoiceCommand(text);
+    };
+    recognition.onerror = function(event){
+      voiceListening = false;
+      var msg = "Sorry, I couldn't hear you. Please try again.";
+      if(event.error === "not-allowed" || event.error === "service-not-allowed"){
+        msg = "Microphone permission is needed. Please allow it in settings.";
+      } else if(event.error === "no-speech"){
+        msg = "I didn't hear anything. Tap the mic and try again.";
+      }
+      speak(msg);
+      setVoiceUI("idle", "Tap the mic and speak");
+    };
+    recognition.onend = function(){
+      voiceListening = false;
+      if(document.getElementById("mic-btn").classList.contains("listening")){
+        setVoiceUI("idle", "Tap the mic and speak");
+      }
+    };
+
+    recognition.start();
+  }catch(e){
+    voiceListening = false;
+    speak("Could not start speech recognition.");
+    setVoiceUI("idle", "Tap the mic and speak");
+  }
+}
+
+function stopVoiceRecognition(){
+  voiceListening = false;
+  if(recognition){
+    try{ recognition.stop(); }catch(e){}
+  }
+  setVoiceUI("idle", "Tap the mic and speak");
+}
 
 /* init */
 ensureRollover();
